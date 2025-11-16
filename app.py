@@ -1,1 +1,123 @@
-{"nbformat":4,"nbformat_minor":0,"metadata":{"colab":{"provenance":[],"authorship_tag":"ABX9TyNFHq87e+o1NuR3ZWPXzAMQ"},"kernelspec":{"name":"python3","display_name":"Python 3"},"language_info":{"name":"python"}},"cells":[{"cell_type":"code","execution_count":null,"metadata":{"id":"34wo4odfohMt"},"outputs":[],"source":["import streamlit as st\n","import yfinance as yf\n","import pandas as pd\n","import numpy as np\n","from sklearn.preprocessing import MinMaxScaler\n","from tensorflow.keras.models import Sequential\n","from tensorflow.keras.layers import LSTM, Dense, Dropout\n","from tensorflow.keras.callbacks import EarlyStopping\n","import matplotlib.pyplot as plt\n","from datetime import datetime, timedelta\n","import warnings\n","warnings.filterwarnings('ignore')\n","\n","# Title\n","st.title(\"Stock Price Predictor (LSTM)\")\n","st.write(\"Enter stock symbol and future date to get prediction!\")\n","\n","# User Input\n","ticker = st.text_input(\"Stock Symbol (e.g., AAPL, AMZN)\", \"AAPL\").upper()\n","future_date_str = st.date_input(\"Future Date\", datetime(2025, 11, 25))\n","future_date = pd.to_datetime(future_date_str).date()\n","\n","if st.button(\"Predict\"):\n","    with st.spinner(\"Fetching data & training model...\"):\n","        # Download Data\n","        data = yf.download(ticker, start=\"2010-01-01\", progress=False)\n","        data = data[['Close']].copy()\n","\n","        # Features\n","        data['SMA_10'] = data['Close'].rolling(10).mean()\n","        data['SMA_50'] = data['Close'].rolling(50).mean()\n","        data['EMA_12'] = data['Close'].ewm(span=12).mean()\n","        data['EMA_26'] = data['Close'].ewm(span=26).mean()\n","        delta = data['Close'].diff()\n","        gain = (delta.where(delta > 0, 0)).rolling(14).mean()\n","        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()\n","        rs = gain / loss\n","        data['RSI'] = 100 - (100 / (1 + rs))\n","        data['MACD'] = data['EMA_12'] - data['EMA_26']\n","        data['MACD_Signal'] = data['MACD'].ewm(span=9).mean()\n","        data.dropna(inplace=True)\n","\n","        features = ['Close', 'SMA_10', 'SMA_50', 'EMA_12', 'EMA_26', 'RSI', 'MACD', 'MACD_Signal']\n","        scaler = MinMaxScaler()\n","        scaled_data = scaler.fit_transform(data[features])\n","\n","        # Sequences\n","        def create_sequences(data, seq_length=60):\n","            X, y = [], []\n","            for i in range(seq_length, len(data)):\n","                X.append(data[i-seq_length:i])\n","                y.append(data[i, 0])\n","            return np.array(X), np.array(y)\n","\n","        X, y = create_sequences(scaled_data, 60)\n","        split = int(0.8 * len(X))\n","        X_train, X_test = X[:split], X[split:]\n","        y_train, y_test = y[:split], y[split:]\n","\n","        # Model\n","        model = Sequential()\n","        model.add(LSTM(100, return_sequences=True, input_shape=(60, len(features))))\n","        model.add(Dropout(0.2))\n","        model.add(LSTM(100, return_sequences=False))\n","        model.add(Dropout(0.2))\n","        model.add(Dense(50, activation='relu'))\n","        model.add(Dense(1))\n","        model.compile(optimizer='adam', loss='mse')\n","\n","        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)\n","        model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test),\n","                  callbacks=[early_stop], verbose=0)\n","\n","        # Future Prediction\n","        last_date = data.index[-1].date()\n","        current_price = data['Close'][-1]\n","\n","        if future_date <= last_date:\n","            st.error(\"Future date must be after today!\")\n","        else:\n","            days_ahead = (future_date - last_date).days\n","            last_seq = scaled_data[-60:].copy()\n","            future_preds = []\n","            current_seq = last_seq\n","\n","            for _ in range(days_ahead):\n","                pred_scaled = model.predict(current_seq.reshape(1, 60, len(features)), verbose=0)[0, 0]\n","                future_preds.append(pred_scaled)\n","\n","                new_close = pred_scaled\n","                seq_close = current_seq[:, 0]\n","                new_sma10 = np.mean(seq_close[-9:]) if len(seq_close) >= 9 else new_close\n","                new_sma50 = np.mean(seq_close[-49:]) if len(seq_close) >= 49 else new_close\n","                new_ema12 = 0.1538 * new_close + 0.8462 * current_seq[-1, 3]\n","                new_ema26 = 0.0741 * new_close + 0.9259 * current_seq[-1, 4]\n","                new_rsi = 50\n","                new_macd = new_ema12 - new_ema26\n","                new_signal = 0.2 * new_macd + 0.8 * current_seq[-1, 7]\n","\n","                new_row = np.array([new_close, new_sma10, new_sma50, new_ema12, new_ema26, new_rsi, new_macd, new_signal]).reshape(1, -1)\n","                new_row_scaled = scaler.transform(new_row)\n","                current_seq = np.vstack([current_seq[1:], new_row_scaled])\n","\n","            future_prices = scaler.inverse_transform(\n","                np.concatenate([np.array(future_preds).reshape(-1,1), np.zeros((len(future_preds), len(features)-1))], axis=1)\n","            )[:, 0]\n","\n","            pred_dates = pd.bdate_range(start=last_date + timedelta(days=1), end=future_date)\n","            future_prices = future_prices[:len(pred_dates)]\n","\n","            # Display Results\n","            st.success(f\"Prediction from {last_date} to {future_date}\")\n","            df_pred = pd.DataFrame({\n","                'Date': pred_dates,\n","                'Predicted Price': [f\"${p:.2f}\" for p in future_prices]\n","            })\n","            st.table(df_pred)\n","\n","            # Overall\n","            final_price = future_prices[-1]\n","            change = final_price - current_price\n","            st.metric(\"Overall Change\", f\"${change:+.2f}\", f\"{(change/current_price)*100:+.2f}%\")\n","\n","            # Plot\n","            fig, ax = plt.subplots(figsize=(10, 5))\n","            ax.plot(data.index[-100:], data['Close'][-100:], label='Past', color='blue')\n","            ax.plot(pred_dates, future_prices, label='Future', color='red', linestyle='--')\n","            ax.axvline(x=last_date, color='green', linestyle=':', label='Today')\n","            ax.set_title(f'{ticker} Stock Prediction')\n","            ax.set_ylabel('Price ($)')\n","            ax.legend()\n","            ax.grid(True)\n","            st.pyplot(fig)"]},{"cell_type":"code","source":[],"metadata":{"id":"gTgNwvysontL"},"execution_count":null,"outputs":[]}]}
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+st.set_page_config(page_title="Stock Predictor", layout="wide")
+st.title("Stock Price Predictor (LSTM + SMA + RSI + MACD)")
+st.write("Enter stock and future date → Get accurate prediction!")
+
+col1, col2 = st.columns(2)
+with col1:
+    ticker = st.text_input("Stock Symbol", "AAPL").upper()
+with col2:
+    future_date = st.date_input("Future Date", datetime(2025, 11, 25))
+
+if st.button("Predict Now", type="primary"):
+    with st.spinner("Training model on latest data..."):
+        # === DATA ===
+        data = yf.download(ticker, start="2010-01-01", progress=False)[['Close']]
+        
+        # === FEATURES ===
+        data['SMA_10'] = data['Close'].rolling(10).mean()
+        data['SMA_50'] = data['Close'].rolling(50).mean()
+        data['EMA_12'] = data['Close'].ewm(span=12).mean()
+        data['EMA_26'] = data['Close'].ewm(span=26).mean()
+        
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        data['RSI'] = 100 - (100 / (1 + rs))
+        data['MACD'] = data['EMA_12'] - data['EMA_26']
+        data['MACD_Signal'] = data['MACD'].ewm(span=9).mean()
+        data.dropna(inplace=True)
+
+        features = ['Close', 'SMA_10', 'SMA_50', 'EMA_12', 'EMA_26', 'RSI', 'MACD', 'MACD_Signal']
+        scaler = MinMaxScaler()
+        scaled = scaler.fit_transform(data[features])
+
+        # === SEQUENCES ===
+        def create_sequences(data, seq_length=60):
+            X, y = [], []
+            for i in range(seq_length, len(data)):
+                X.append(data[i-seq_length:i])
+                y.append(data[i, 0])
+            return np.array(X), np.array(y)
+        
+        X, y = create_sequences(scaled, 60)
+        split = int(0.8 * len(X))
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+
+        # === MODEL ===
+        model = Sequential()
+        model.add(LSTM(100, return_sequences=True, input_shape=(60, len(features))))
+        model.add(Dropout(0.2))
+        model.add(LSTM(100, return_sequences=False))
+        model.add(Dropout(0.2))
+        model.add(Dense(50, activation='relu'))
+        model.add(Dense(1))
+        model.compile(optimizer='adam', loss='mse')
+        
+        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+        model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test),
+                  callbacks=[early_stop], verbose=0)
+
+        # === FUTURE PREDICTION (FIXED SCALE) ===
+        last_date = data.index[-1].date()
+        current_price = data['Close'][-1]
+        days = (pd.to_datetime(future_date) - pd.to_datetime(last_date)).days
+
+        if days <= 0:
+            st.error("Future date must be after today!")
+        else:
+            seq = scaled[-60:].copy()
+            preds = []
+            for _ in range(days):
+                p = model.predict(seq.reshape(1, 60, len(features)), verbose=0)[0, 0]
+                preds.append(p)
+
+                # UPDATE FEATURES IN SCALED SPACE (Fixed for no explosion)
+                close_seq = seq[:, 0]
+                new_sma10 = np.mean(close_seq[-9:]) if len(close_seq) >= 9 else p
+                new_sma50 = np.mean(close_seq[-49:]) if len(close_seq) >= 49 else p
+                alpha12 = 2/(12+1); new_ema12 = alpha12 * p + (1-alpha12) * seq[-1, 3]
+                alpha26 = 2/(26+1); new_ema26 = alpha26 * p + (1-alpha26) * seq[-1, 4]
+                new_rsi = 50
+                new_macd = new_ema12 - new_ema26
+                alpha9 = 2/(9+1); new_sig = alpha9 * new_macd + (1-alpha9) * seq[-1, 7]
+
+                new_row = np.array([p, new_sma10, new_sma50, new_ema12, new_ema26, new_rsi, new_macd, new_sig]).reshape(1, -1)
+                new_row_scaled = scaler.transform(new_row)
+                seq = np.vstack([seq[1:], new_row_scaled])
+
+            prices = scaler.inverse_transform(np.concatenate([np.array(preds).reshape(-1,1), 
+                                                             np.zeros((len(preds), len(features)-1))], axis=1))[:, 0]
+            dates = pd.bdate_range(start=last_date + timedelta(1), end=future_date)
+            prices = prices[:len(dates)]
+
+            # === RESULTS ===
+            st.success(f"Prediction: {last_date} → {future_date}")
+            df = pd.DataFrame({'Date': dates.strftime('%Y-%m-%d'), 'Price': [f"${x:.2f}" for x in prices]})
+            st.table(df)
+
+            change = prices[-1] - current_price
+            st.metric("Overall Change", f"${change:+.2f}", f"{(change/current_price)*100:+.2f}%")
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(data.index[-100:], data['Close'][-100:], label='Past', color='blue')
+            ax.plot(dates, prices, label='Future', color='red', linestyle='--')
+            ax.axvline(last_date, color='green', linestyle=':', label='Today')
+            ax.set_title(f"{ticker} Stock Prediction")
+            ax.legend()
+            ax.grid()
+            st.pyplot(fig)
