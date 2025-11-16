@@ -1,5 +1,4 @@
-# app.py - FINAL WORKING VERSION (No Errors, Realistic Scale)
-
+# app.py - FINAL ATTRACTIVE & WORKING VERSION
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -13,44 +12,89 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Stock Predictor", layout="wide")
-st.title("AI Stock Price Predictor")
-st.write("Enter any stock & future date → Get accurate prediction!")
+# PAGE CONFIG
+st.set_page_config(page_title="AI Stock Predictor", layout="wide", initial_sidebar_state="expanded")
 
-# Input
-col1, col2 = st.columns(2)
+# CUSTOM CSS - PROFESSIONAL LOOK
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3.5rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #1e3d72, #00c6ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    .subtitle {
+        text-align: center;
+        color: #666;
+        font-size: 1.2rem;
+        margin-bottom: 2rem;
+    }
+    .stButton>button {
+        background: linear-gradient(45deg, #ff512f, #dd2476);
+        color: white;
+        border: none;
+        padding: 12px 30px;
+        font-size: 1.1rem;
+        border-radius: 50px;
+        font-weight: bold;
+        box-shadow: 0 4px 15px rgba(255,81,47,0.4);
+        transition: all 0.3s;
+    }
+    .stButton>button:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 6px 20px rgba(255,81,47,0.6);
+    }
+    .metric-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .prediction-table {
+        background: white;
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# HEADER
+st.markdown('<h1 class="main-header">AI Stock Price Predictor</h1>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Enter any stock & future date → Get <b>accurate AI prediction</b> with trends!</p>', unsafe_allow_html=True)
+
+# INPUTS
+col1, col2 = st.columns([1, 1])
 with col1:
-    ticker = st.text_input("Stock Symbol", "AAPL").upper().strip()
+    ticker = st.text_input("**Stock Symbol**", "AMZN", help="e.g., AAPL, MSFT, GOOGL").upper().strip()
 with col2:
-    future_date = st.date_input("Future Date", datetime(2025, 11, 25))
+    future_date = st.date_input("**Future Date**", datetime(2025, 11, 25))
 
+# PREDICT BUTTON
 if st.button("Predict Now", type="primary"):
-    with st.spinner("Fetching data & training model..."):
+    with st.spinner("Training AI model on latest data..."):
         try:
-            # === FIX 1: Get Close properly (handle MultiIndex) ===
-            raw_data = yf.download(ticker, start="2010-01-01", progress=False)
-            if raw_data.empty:
-                st.error("No data found for this stock!")
+            # DATA
+            raw = yf.download(ticker, start="2010-01-01", progress=False)
+            if raw.empty:
+                st.error("No data found!")
                 st.stop()
-            
-            # Fix column name
-            if 'Close' in raw_data.columns:
-                close_col = 'Close'
-            elif 'close' in raw_data.columns:
-                close_col = 'close'
-            else:
-                st.error("No 'Close' column found!")
-                st.stop()
-            
-            data = pd.DataFrame(raw_data[close_col]).copy()
+
+            close_col = 'Close' if 'Close' in raw.columns else 'close'
+            data = pd.DataFrame(raw[close_col]).copy()
             data.columns = ['Close']
 
-            # === ADD FEATURES ===
+            # FEATURES
             data['SMA_10'] = data['Close'].rolling(10).mean()
             data['SMA_50'] = data['Close'].rolling(50).mean()
             data['EMA_12'] = data['Close'].ewm(span=12).mean()
             data['EMA_26'] = data['Close'].ewm(span=26).mean()
-            
             delta = data['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -64,20 +108,19 @@ if st.button("Predict Now", type="primary"):
             scaler = MinMaxScaler()
             scaled = scaler.fit_transform(data[features])
 
-            # === SEQUENCES ===
-            def create_sequences(data, seq_length=60):
+            # SEQUENCES
+            def seq(data, length=60):
                 X, y = [], []
-                for i in range(seq_length, len(data)):
-                    X.append(data[i-seq_length:i])
+                for i in range(length, len(data)):
+                    X.append(data[i-length:i])
                     y.append(data[i, 0])
                 return np.array(X), np.array(y)
-            
-            X, y = create_sequences(scaled)
+            X, y = seq(scaled)
             split = int(0.8 * len(X))
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
 
-            # === MODEL ===
+            # MODEL
             model = Sequential()
             model.add(LSTM(100, return_sequences=True, input_shape=(60, len(features))))
             model.add(Dropout(0.2))
@@ -86,15 +129,12 @@ if st.button("Predict Now", type="primary"):
             model.add(Dense(50, activation='relu'))
             model.add(Dense(1))
             model.compile('adam', 'mse')
-            
-            early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
             model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test),
-                      callbacks=[early_stop], verbose=0)
+                      callbacks=[EarlyStopping(patience=10)], verbose=0)
 
-            # === FUTURE PREDICTION (FIXED SCALE) ===
+            # FUTURE PREDICTION (FIXED SCALE)
             last_date = data.index[-1].date()
-            current_price = data['Close'].iloc[-1]  # FIX: .iloc for safety
-
+            current_price = data['Close'].iloc[-1]
             days = (pd.to_datetime(future_date) - pd.to_datetime(last_date)).days
             if days <= 0:
                 st.error("Future date must be after today!")
@@ -106,7 +146,7 @@ if st.button("Predict Now", type="primary"):
                 p = model.predict(seq.reshape(1, 60, len(features)), verbose=0)[0, 0]
                 preds.append(p)
 
-                # UPDATE IN SCALED SPACE (Proper EMA alpha)
+                # PROPER SCALED UPDATE
                 close_seq = seq[:, 0]
                 new_sma10 = np.mean(close_seq[-9:]) if len(close_seq) >= 9 else p
                 new_sma50 = np.mean(close_seq[-49:]) if len(close_seq) >= 49 else p
@@ -127,24 +167,43 @@ if st.button("Predict Now", type="primary"):
             dates = pd.bdate_range(start=last_date + timedelta(1), end=future_date)
             prices = prices[:len(dates)]
 
-            # === RESULTS ===
+            # RESULTS
             st.success(f"Prediction: {last_date} → {future_date}")
-            df = pd.DataFrame({'Date': [d.strftime('%Y-%m-%d') for d in dates], 'Price': [f"${x:.2f}" for x in prices]})
-            st.table(df)
 
+            # TABLE
+            df = pd.DataFrame({
+                'Date': [d.strftime('%Y-%m-%d') for d in dates],
+                'Price': [f"${x:.2f}" for x in prices],
+                'Trend': ['UP' if i==0 else ('UP' if prices[i]>prices[i-1] else 'DOWN') for i in range(len(prices))]
+            })
+            df['Trend'] = df['Trend'].replace({'UP': 'UP', 'DOWN': 'DOWN'})
+            st.markdown("<div class='prediction-table'>", unsafe_allow_html=True)
+            st.dataframe(df.style.apply(lambda x: ['background: #d4edda' if v=='UP' else 'background: #f8d7da' for v in x], subset=['Trend']), use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # METRICS
             change = prices[-1] - current_price
-            st.metric("Overall Change", f"${change:+.2f}", f"{(change/current_price)*100:+.2f}%")
+            pct = (change / current_price) * 100
+            colm1, colm2, colm3 = st.columns(3)
+            with colm1:
+                st.markdown(f"<div class='metric-card'><h3>Start Price</h3><h2>${current_price:.2f}</h2></div>", unsafe_allow_html=True)
+            with colm2:
+                st.markdown(f"<div class='metric-card'><h3>End Price</h3><h2>${prices[-1]:.2f}</h2></div>", unsafe_allow_html=True)
+            with colm3:
+                color = "green" if change > 0 else "red"
+                st.markdown(f"<div class='metric-card' style='background: linear-gradient(135deg, {'#11998e' if change>0 else '#ee5a52'} 0%, {'#38ef7d' if change>0 else '#ff6b6b'} 100%)'><h3>Change</h3><h2 style='color:white'>{change:+.2f} ({pct:+.2f}%)</h2></div>", unsafe_allow_html=True)
 
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(data.index[-100:], data['Close'][-100:], label='Past', color='blue')
-            ax.plot(dates, prices, label='Future', color='red', linestyle='--')
-            ax.axvline(last_date, color='green', linestyle=':', label='Today')
-            ax.set_title(f"{ticker} Stock Prediction")
-            ax.set_ylabel("Price ($)")
-            ax.legend()
-            ax.grid(True)
+            # GRAPH
+            fig, ax = plt.subplots(figsize=(14, 7))
+            ax.plot(data.index[-100:], data['Close'][-100:], label='Historical', color='#1e3d72', linewidth=2.5)
+            ax.plot(dates, prices, label='AI Prediction', color='#ff512f', linestyle='--', linewidth=3)
+            ax.axvline(last_date, color='green', linestyle=':', linewidth=2, label='Today')
+            ax.set_title(f"{ticker} Stock Price: Past + AI Future Prediction", fontsize=18, fontweight='bold', color='#1e3d72')
+            ax.set_ylabel("Price ($)", fontsize=14)
+            ax.legend(fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.set_facecolor('#f8f9fa')
             st.pyplot(fig)
 
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            st.write("Try a valid stock like AAPL, MSFT, AMZN")
