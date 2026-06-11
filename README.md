@@ -4,7 +4,7 @@ An LSTM-based deep learning app that predicts future stock prices
 using real-time market data and technical indicators.
 
 ## 🧠 How It Works
-- Fetches real-time stock data via yfinance
+- Fetches real-time stock data via yfinance 
 - Engineers technical indicators: SMA, EMA, RSI, MACD
 - Trains a 2-layer LSTM neural network on historical data
 - Predicts future prices for any date you choose
